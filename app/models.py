@@ -54,3 +54,8 @@ class MessageIn(BaseModel):
     direction: Literal["inbound", "outbound"]
     timestamp: str
     text: str
+
+
+class ReviewResolveIn(BaseModel):
+    decision: Literal["apply", "discard"]
+    quote_id: str | None = None

@@ -42,11 +42,17 @@ _QTY_PATTERNS = [
 
 # family detection on normalized text
 _FAMILIES: dict[str, re.Pattern] = {
-    "lona": re.compile(r"\bfrontlit\b|\blona\s+(?!mesh)"),
+    "lona": re.compile(r"\bfrontlit\b|\blona(?:s)?\b(?!\s+mesh)"),
     "mesh": re.compile(r"\bmesh\b"),
     "microperforado": re.compile(r"\bmicroperforado\b|\bvinil\b|\bmicro\b"),
     "acrilico": re.compile(r"\bacrilicos?\b"),
 }
+
+# intent signals (normalized text)
+_CANCEL = re.compile(r"\bcancel")
+_NEW = re.compile(r"\baparte\b|\btambien\b|\bagrega\b")
+_QUESTION = re.compile(r"\bme\s+confirmas\b|\bque\s+lleva\b|\blleva\s+la\s+cotiz|\bcuanto\s+(?:vale|cuesta)")
+_REVISE = re.compile(r"\bmejor\s+que\s+sean\b|\bmejor\s+sean\b|\bque\s+sean\b|\bcambialo\b|\ben\s+vez\s+de\b")
 
 _WIDTH_AFTER_MENTION = re.compile(r"(\d+[.,]\d+)\s*[x×]\s*\d+")   # 3.20 x 100
 _ANY_WIDTH = re.compile(r"(\d+[.,]\d+)")
@@ -83,7 +89,13 @@ def _extract_qty(clause: str) -> int | None:
 
 def _match_sku(family: str, width: str | None) -> str | None:
     """Catalog match — the ONLY path from text to a SKU. None when the
-    mention can't be pinned to exactly one catalog entry (width 1.50)."""
+    mention can't be pinned to exactly one catalog entry (width 1.50).
+
+    Hallucination guard: this function can only return strings that exist
+    in app.catalog.CATALOG. There is no code path from raw message text
+    into quote_lines.sku that doesn't pass through here (plus the Pydantic
+    re-check at the API boundary), so an unknown SKU is impossible by
+    construction, not by prompt discipline."""
     candidates = [s for s in CATALOG.values() if s.family == family]
     if width is not None:
         exact = [s for s in candidates if width in s.widths]
@@ -150,3 +162,57 @@ def extract_conversation(messages: list[dict]) -> ExtractionResult:
 
     result.pending_mentions = pending
     return result
+
+
+@dataclass
+class MessageExtraction:
+    """What one arriving message says it wants — the routing decision's input."""
+    intent: str                      # revise | create | question | cancel | none
+    families: list[str]              # product families referenced in the text
+    line_items: list[dict]           # fully-specified (sku, qty) requests
+    new_qty: int | None = None       # qty for a revise intent
+
+
+def extract_message(text: str) -> MessageExtraction:
+    """Single-message extraction (Phase 2). Intent first, then details.
+
+    THE LLM SEAM (documented for the presentation): this function — and
+    extract_conversation() — are the ONLY places free text becomes structure.
+    An LLM adapter would implement the same signature (text -> MessageExtraction)
+    with a constrained decode: allowed SKUs enumerated from the catalog,
+    qty an integer, intent one of four strings. What it may decide: intent,
+    quantities, which family. What it may NEVER decide: the sku itself —
+    sku values only ever come from _match_sku() reading app.catalog, so even
+    a hallucinated model output would be filtered to catalog entries before
+    storage. Today: pure rules, zero tokens, fully reproducible output.
+
+    The order matters: 'aparte' dominates (a fresh request even when it
+    follows existing ones); 'mejor que sean N' is a revise; a question word
+    makes it a question; 'cancel' cancels.
+    """
+    norm = _normalize(text)
+    norm = _NO_CORRECTION.sub("", norm)  # "15, no 20" -> keeps 15
+
+    families = [fam for fam, pat in _FAMILIES.items() if pat.search(norm)]
+    items = extract_conversation([{"direction": "inbound", "text": text}]).line_items
+
+    new_qty = None
+    m = _REVISE.search(norm) or _NEW.search(norm)
+    qm = re.search(r"\b(?:que\s+sean|sean)\s+(\d+)\b", norm)
+    if qm:
+        new_qty = int(qm.group(1))
+
+    if _CANCEL.search(norm):
+        intent = "cancel"
+    elif _NEW.search(norm):
+        intent = "create"
+    elif _QUESTION.search(norm):
+        intent = "question"
+    elif _REVISE.search(norm) or (families and new_qty is not None):
+        intent = "revise"
+    else:
+        intent = "none"
+
+    return MessageExtraction(
+        intent=intent, families=families, line_items=items, new_qty=new_qty
+    )

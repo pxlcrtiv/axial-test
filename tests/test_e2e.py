@@ -77,3 +77,205 @@ def test_phase1_conversation_to_draft_quote(client):
     # and it's queryable
     r2 = client.get("/quotes", params={"customer": "C-10029"})
     assert r2.json()["quotes"][0]["quote_id"] == body["quote_id"]
+
+
+EVENTS = [
+    {"message_id": "wamid.411.0231", "conversation_id": "wa-thread-411",
+     "customer_id": "C-10029", "direction": "inbound",
+     "timestamp": "2026-02-11T10:14:00Z",
+     "text": "Oye de las lonas mejor que sean 15, no 20"},  # event 1: revise lona 20->15
+    {"message_id": "wamid.662.0001", "conversation_id": "wa-thread-662",
+     "customer_id": "C-10029", "direction": "inbound",
+     "timestamp": "2026-02-11T11:00:00Z",
+     "text": "Buen dia, soy Mario de compras de ACME. Alice me pasó con ustedes, me confirmas qué lleva la cotización de las lonas?"},  # event 2: link only
+    {"message_id": "wamid.411.0232", "conversation_id": "wa-thread-411",
+     "customer_id": "C-10029", "direction": "inbound",
+     "timestamp": "2026-02-11T11:30:00Z",
+     "text": "y aparte cotizame 2 acrilicos blancos de 3mm porfa"},  # event 3: new quote Q-002
+    {"message_id": "wamid.662.0002", "conversation_id": "wa-thread-662",
+     "customer_id": "C-10029", "direction": "inbound",
+     "timestamp": "2026-02-12T09:00:00Z",
+     "text": "perfecto. y de los acrilicos que cotizó Alice, mejor que sean 4"},  # event 4: Q-002 acrilico 2->4
+]
+
+EXPECTED_FINAL = [
+    {"quote_id": "Q-001", "status": "draft",
+     "conversations": ["wa-thread-411", "wa-thread-662"],
+     "line_items": [
+         {"sku": "ALFBTC-013-320100", "qty": 15},
+         {"sku": "ALMCLC-0909-320100", "qty": 5},
+         {"sku": "AVMICS-1A-137050", "qty": 5},
+     ]},
+    {"quote_id": "Q-002", "status": "draft",
+     "conversations": ["wa-thread-411", "wa-thread-662"],
+     "line_items": [
+         {"sku": "ARACBL-03-122244", "qty": 4},
+     ]},
+]
+
+
+def _sort_quotes(quotes):
+    for q in quotes:
+        q["conversations"] = sorted(q["conversations"])
+        q["line_items"] = sorted(q["line_items"], key=lambda li: li["sku"])
+    return sorted(quotes, key=lambda q: q["quote_id"])
+
+
+def _seed_phase1(client):
+    r = client.post("/ingest/conversation", json=PHASE1_PAYLOAD)
+    assert r.status_code == 200
+
+
+def test_phase2_four_events_final_state(client):
+    _seed_phase1(client)
+    for ev in EVENTS:
+        r = client.post("/ingest/message", json=ev)
+        assert r.status_code == 200, r.text
+
+    r = client.get("/quotes", params={"customer": "C-10029"})
+    assert _sort_quotes(r.json()["quotes"]) == _sort_quotes(EXPECTED_FINAL)
+
+
+def test_phase2_event2_links_without_changing_lines(client):
+    _seed_phase1(client)
+    client.post("/ingest/message", json=EVENTS[1])  # Mario asks about lonas
+    r = client.get("/quotes", params={"customer": "C-10029"})
+    q1 = r.json()["quotes"][0]
+    assert sorted(q1["conversations"]) == ["wa-thread-411", "wa-thread-662"]
+    # no line changed
+    assert {li["sku"]: li["qty"] for li in q1["line_items"]}["ALFBTC-013-320100"] == 20
+
+
+def test_phase2_event3_creates_second_quote_from_same_chat(client):
+    _seed_phase1(client)
+    client.post("/ingest/message", json=EVENTS[2])  # "aparte"
+    r = client.get("/quotes", params={"customer": "C-10029"})
+    quotes = r.json()["quotes"]
+    assert len(quotes) == 2
+    assert quotes[1]["line_items"] == [{"sku": "ARACBL-03-122244", "qty": 2}]
+    # both quotes live in Alice's chat
+    assert quotes[1]["conversations"] == ["wa-thread-411"]
+
+
+def test_audit_history_attributes_change_to_message(client):
+    """A human can see what changed and which message caused it."""
+    _seed_phase1(client)
+    for ev in EVENTS:
+        client.post("/ingest/message", json=ev)
+
+    r = client.get("/quotes/Q-001")
+    assert r.status_code == 200
+    body = r.json()
+    history = body["history"]
+    lona_updates = [h for h in history
+                    if h["sku"] == "ALFBTC-013-320100" and h["cause"] == "updated"]
+    assert lona_updates == [{
+        "sku": "ALFBTC-013-320100", "old_qty": 20, "new_qty": 15,
+        "cause": "updated", "message_id": "wamid.411.0231",
+    }]
+    # link-only and create transitions also appear
+    causes = {(h["cause"], h["message_id"]) for h in history}
+    assert ("created", "ingest-wa-thread-411") in causes
+    # message dispositions tell the per-message story
+    dispositions = {m["message_id"]: m["disposition"] for m in body["messages"]}
+    assert dispositions["wamid.411.0231"] == "updated"
+    assert dispositions["wamid.662.0001"] == "linked"
+
+    r2 = client.get("/quotes/Q-002")
+    d2 = {m["message_id"]: m["disposition"] for m in r2.json()["messages"]}
+    assert d2["wamid.411.0232"] == "created"
+    assert d2["wamid.662.0002"] == "updated"
+
+
+def test_duplicate_delivery_is_idempotent(client):
+    """Webhook re-delivery (same message_id, byte-identical): no state change."""
+    _seed_phase1(client)
+    for ev in EVENTS:
+        client.post("/ingest/message", json=ev)
+    before = client.get("/quotes", params={"customer": "C-10029"}).json()
+
+    r = client.post("/ingest/message", json=EVENTS[3])  # re-send event 4
+    assert r.status_code == 200
+    assert r.json()["disposition"] == "ignored-duplicate"
+
+    after = client.get("/quotes", params={"customer": "C-10029"}).json()
+    assert after == before
+
+
+def test_same_text_different_message_id_is_a_real_repeat(client):
+    """Dedupe is by message_id, not text: identical wording twice still applies."""
+    _seed_phase1(client)
+    ev = dict(EVENTS[0])                     # "mejor que sean 15, no 20"
+    client.post("/ingest/message", json=ev)
+    ev2 = dict(ev, message_id="wamid.411.0999")  # same text, new id
+    r = client.post("/ingest/message", json=ev2)
+    assert r.json()["disposition"] in ("updated", "linked")
+
+
+def test_cancelalo_parks_in_review_queue_and_changes_nothing(client):
+    """Ambiguous cancel with two open quotes: human decides, state frozen."""
+    _seed_phase1(client)
+    for ev in EVENTS[:3]:                    # Q-001 and Q-002 both exist
+        client.post("/ingest/message", json=ev)
+    before = client.get("/quotes", params={"customer": "C-10029"}).json()
+
+    r = client.post("/ingest/message", json={
+        "message_id": "wamid.411.0300", "conversation_id": "wa-thread-411",
+        "customer_id": "C-10029", "direction": "inbound",
+        "timestamp": "2026-02-12T10:00:00Z",
+        "text": "mejor cancelalo"})
+    assert r.status_code == 200
+    assert r.json()["disposition"] == "needs_review"
+
+    # nothing changed
+    after = client.get("/quotes", params={"customer": "C-10029"}).json()
+    assert after == before
+
+    # a human can see it, with the quotes it might refer to
+    rv = client.get("/review").json()
+    assert len(rv["pending"]) == 1
+    item = rv["pending"][0]
+    assert item["message_id"] == "wamid.411.0300"
+    assert item["candidate_quote_ids"] == ["Q-001", "Q-002"]
+    assert "cancelalo" in item["text"]
+
+    # resolving: discard -> quote untouched, item leaves the queue
+    res = client.post(f"/review/{item['id']}/resolve",
+                      json={"decision": "discard", "quote_id": None})
+    assert res.status_code == 200
+    after = client.get("/quotes", params={"customer": "C-10029"}).json()
+    assert after == before
+    assert client.get("/review").json()["pending"] == []
+
+
+def test_review_resolve_apply_cancels_only_the_chosen_quote(client):
+    """Human picks the quote it meant -> only that quote changes status."""
+    _seed_phase1(client)
+    for ev in EVENTS[:3]:
+        client.post("/ingest/message", json=ev)
+    client.post("/ingest/message", json={
+        "message_id": "wamid.411.0301", "conversation_id": "wa-thread-411",
+        "customer_id": "C-10029", "direction": "inbound",
+        "timestamp": "2026-02-12T10:05:00Z", "text": "mejor cancelalo"})
+
+    item = client.get("/review").json()["pending"][0]
+    # applying to a quote outside the candidate list is refused
+    bad = client.post(f"/review/{item['id']}/resolve",
+                      json={"decision": "apply", "quote_id": "Q-999"})
+    assert bad.status_code == 422
+
+    res = client.post(f"/review/{item['id']}/resolve",
+                      json={"decision": "apply", "quote_id": "Q-002"})
+    assert res.status_code == 200
+    quotes = {q["quote_id"]: q for q in
+              client.get("/quotes", params={"customer": "C-10029"}).json()["quotes"]}
+    assert quotes["Q-002"]["status"] == "cancelled"
+    assert quotes["Q-001"]["status"] == "draft"
+    # audit records who caused the cancel
+    h = client.get("/quotes/Q-002").json()["history"]
+    assert any(e["cause"] == "cancelled" and e["message_id"] == "wamid.411.0301"
+               for e in h)
+    # double-resolve is refused
+    again = client.post(f"/review/{item['id']}/resolve",
+                        json={"decision": "apply", "quote_id": "Q-002"})
+    assert again.status_code == 409

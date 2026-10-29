@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS line_events (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     quote_id   TEXT NOT NULL,
-    sku        TEXT NOT NULL,
+    sku        TEXT,                     -- NULL for link-only events
     old_qty    INTEGER,
     new_qty    INTEGER,
     cause      TEXT NOT NULL,          -- created | updated | linked

@@ -364,6 +364,32 @@ def test_quote_history_exposes_the_resolving_actor(client):
     assert cancelled[0]["resolved_by"] == "izzy@acme"
 
 
+def test_state_survives_process_restart(client, tmp_path, monkeypatch):
+    """Phase 2 requirement: state lives in SQLite, not in process memory.
+
+    Ingest through one app instance, tear it down entirely, boot a SECOND
+    instance pointed at the same DB file — the four-event final state must
+    still be there. (Two TestClients = two lifespans = a restart.)
+    """
+    _seed_phase1(client)
+    for ev in EVENTS:
+        client.post("/ingest/message", json=ev)
+
+    # first process dies here; boot a fresh one on the same file
+    with TestClient(create_app()) as fresh:
+        quotes = fresh.get("/quotes", params={"customer": "C-10029"}).json()["quotes"]
+        by_id = {q["quote_id"]: q for q in quotes}
+        assert len(by_id) == 2
+        q1 = {li["sku"]: li["qty"] for li in by_id["Q-001"]["line_items"]}
+        assert q1 == {"ALFBTC-013-320100": 15, "ALMCLC-0909-320100": 5,
+                      "AVMICS-1A-137050": 5}
+        assert {li["sku"]: li["qty"] for li in by_id["Q-002"]["line_items"]} == {
+            "ARACBL-03-122244": 4}
+        # both chats on both quotes survived too
+        assert set(by_id["Q-001"]["conversations"]) == {"wa-thread-411", "wa-thread-662"}
+        assert set(by_id["Q-002"]["conversations"]) == {"wa-thread-411", "wa-thread-662"}
+
+
 def test_pre_existing_db_without_resolved_by_is_migrated(tmp_path, monkeypatch):
     """A quotes.db created before ticket 11 must still accept resolutions.
 

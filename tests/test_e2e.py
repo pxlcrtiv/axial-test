@@ -341,3 +341,41 @@ def test_review_resolution_records_the_deciding_actor(client):
     resolved = client.get("/review").json()["resolved"]
     assert resolved[0]["resolution"] == "discard"
     assert resolved[0]["resolved_by"] == "izzy@acme"
+
+
+def test_pre_existing_db_without_resolved_by_is_migrated(tmp_path, monkeypatch):
+    """A quotes.db created before ticket 11 must still accept resolutions.
+
+    `CREATE TABLE IF NOT EXISTS` never adds columns to an existing table, so
+    init_db must ALTER a legacy pending_assignments in place — otherwise
+    /review/{id}/resolve dies with 'no such column: resolved_by'.
+    """
+    import sqlite3
+    from app import db as dbmod
+
+    db_file = tmp_path / "legacy.db"
+    monkeypatch.setenv("QUOTES_DB_PATH", str(db_file))
+    # the pre-ticket-11 table: no resolved_by column
+    conn = sqlite3.connect(db_file)
+    conn.executescript(
+        "CREATE TABLE pending_assignments ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL,"
+        " conversation_id TEXT NOT NULL, customer_id TEXT NOT NULL,"
+        " text TEXT NOT NULL, candidate_quote_ids TEXT NOT NULL,"
+        " reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',"
+        " resolution TEXT, resolved_quote_id TEXT);"
+    )
+    conn.execute(
+        "INSERT INTO pending_assignments (message_id, conversation_id,"
+        " customer_id, text, candidate_quote_ids, reason)"
+        " VALUES ('m1','t1','C-1','mejor cancelalo','[\"Q-001\"]','ambiguous-cancel')"
+    )
+    conn.commit()
+    conn.close()
+
+    dbmod.init_db()  # upgrade path runs here
+
+    conn = sqlite3.connect(db_file)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pending_assignments)")}
+    conn.close()
+    assert "resolved_by" in cols, "legacy table must gain the column"

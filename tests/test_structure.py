@@ -28,9 +28,11 @@ def test_cancelled_transition_lives_in_the_engine():
 
 def test_extract_message_does_not_renormalize_or_reinvent_qty_pattern():
     src = inspect.getsource(extract.extract_message)
-    assert "_normalize" not in src, "already-normalized text is delegated"
+    # must go through the shared pipeline, never the raw normalizer directly
+    assert "_normalize(" not in src
+    assert "_normalize_and_strip_corrections(" in src
     # no hand-rolled duplicate of _QTY_PATTERNS[1]
-    assert "que\\\\s+sean|sean" not in src.replace(" ", "")
+    assert "que\\s+sean|sean" not in src.replace(" ", "")
 
 
 def test_intent_is_a_literal():

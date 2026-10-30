@@ -51,7 +51,7 @@ _FAMILIES: dict[str, re.Pattern] = {
 
 # intent signals (normalized text)
 _CANCEL = re.compile(r"\bcancel")
-_NEW = re.compile(r"\baparte\b|\btambien\b|\bagrega\b")
+_NEW = re.compile(r"\btambien\b|\bagrega\b")   # weak connectives; 'aparte' lives in _EXPLICIT_NEW
 _QUESTION = re.compile(r"\bme\s+confirmas\b|\bque\s+lleva\b|\blleva\s+la\s+cotiz|\bcuanto\s+(?:vale|cuesta)")
 _REVISE = re.compile(r"\bmejor\s+que\s+sean\b|\bmejor\s+sean\b|\bque\s+sean\b|\bcambialo\b|\ben\s+vez\s+de\b")
 # "aparte" is an explicit request for a separate document; "tambien"/"agrega"
@@ -130,7 +130,7 @@ def _extract_revision_qty(norm: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def _clean(text: str) -> str:
+def _normalize_and_strip_corrections(text: str) -> str:
     """The one normalize + correction-strip pipeline (dedup fix, ticket 12):
     extract_conversation and extract_message both go through here — neither
     re-implements it."""
@@ -142,7 +142,7 @@ def extract_conversation(messages: list[dict]) -> ExtractionResult:
     pending: list[Mention] = []  # join-scatter details across messages
 
     for msg in messages:
-        text = _clean(msg["text"])
+        text = _normalize_and_strip_corrections(msg["text"])
 
         for clause in _split_clauses(text):
             mention = _find_mention(clause)
@@ -207,7 +207,7 @@ def extract_message(text: str) -> MessageExtraction:
     as create. A bare 'tambien' inside a revision sentence must not fork a
     new quote — revision outranks it.
     """
-    norm = _clean(text)
+    norm = _normalize_and_strip_corrections(text)
 
     families = [fam for fam, pat in _FAMILIES.items() if pat.search(norm)]
     items = extract_conversation([{"direction": "inbound", "text": text}]).line_items

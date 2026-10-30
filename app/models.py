@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from .catalog import SKUS
+from .catalog import valid_skus
 
 
 class LineItem(BaseModel):
@@ -18,7 +18,7 @@ class LineItem(BaseModel):
     @field_validator("sku")
     @classmethod
     def sku_must_be_in_catalog(cls, v: str) -> str:
-        if v not in SKUS():
+        if v not in valid_skus():
             raise ValueError(f"SKU {v!r} is not in the catalog")
         return v
 

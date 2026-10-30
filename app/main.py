@@ -5,8 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 
 from .db import get_db, init_db
-from .engine import (_now, create_quote, ensure_conversation, process_message,
-                     record_message)
+from .engine import (apply_cancel, create_quote, ensure_conversation,
+                     process_message)
 from .extract import extract_conversation
 from .models import ConversationIn, MessageIn, QuotesOut, ReviewResolveIn
 
@@ -130,20 +130,8 @@ def create_app() -> FastAPI:
                 if decision.quote_id not in candidates:
                     raise HTTPException(
                         422, f"quote_id must be one of {candidates}")
-                conn.execute(
-                    "UPDATE quotes SET status = 'cancelled' WHERE id = ?",
-                    (decision.quote_id,),
-                )
-                conn.execute(
-                    "INSERT INTO line_events (quote_id, sku, old_qty, new_qty, cause, message_id, timestamp) "
-                    "VALUES (?, NULL, NULL, NULL, 'cancelled', ?, ?)",
-                    (decision.quote_id, row["message_id"], _now()),
-                )
-                conn.execute(
-                    "UPDATE messages SET disposition = 'cancelled', quote_id = ? "
-                    "WHERE message_id = ?",
-                    (decision.quote_id, row["message_id"]),
-                )
+                # the transition itself lives in the engine (single owner)
+                apply_cancel(conn, decision.quote_id, row["message_id"])
             conn.execute(
                 "UPDATE pending_assignments SET status = 'resolved', resolution = ?, "
                 "resolved_by = ?, resolved_quote_id = ? WHERE id = ?",

@@ -22,6 +22,7 @@ The customer's 1.50 m ask resolves to no SKU: the catalog carries only
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Literal
 
 from .catalog import CATALOG
 
@@ -73,7 +74,6 @@ class Mention:
 @dataclass
 class ExtractionResult:
     line_items: list[dict] = field(default_factory=list)
-    pending_mentions: list[Mention] = field(default_factory=list)
 
 
 def _normalize(text: str) -> str:
@@ -123,13 +123,26 @@ def _split_clauses(text: str) -> list[str]:
     return [c.strip() for c in re.split(r"[.,;]|\by\s+(?=si|tambien|aparte|cotizame)", text) if c.strip()]
 
 
+def _extract_revision_qty(norm: str) -> int | None:
+    """The 'que sean N' quantity — reuses the shared pattern (no hand-rolled
+    duplicate of _QTY_PATTERNS, ticket 12)."""
+    m = _QTY_PATTERNS[1].search(norm)
+    return int(m.group(1)) if m else None
+
+
+def _clean(text: str) -> str:
+    """The one normalize + correction-strip pipeline (dedup fix, ticket 12):
+    extract_conversation and extract_message both go through here — neither
+    re-implements it."""
+    return _NO_CORRECTION.sub("", _normalize(text))  # "15, no 20" -> keeps 15
+
+
 def extract_conversation(messages: list[dict]) -> ExtractionResult:
     result = ExtractionResult()
-    pending: list[Mention] = []
+    pending: list[Mention] = []  # join-scatter details across messages
 
     for msg in messages:
-        text = _normalize(msg["text"])
-        text = _NO_CORRECTION.sub("", text)  # "15, no 20" -> keeps 15
+        text = _clean(msg["text"])
 
         for clause in _split_clauses(text):
             mention = _find_mention(clause)
@@ -163,14 +176,13 @@ def extract_conversation(messages: list[dict]) -> ExtractionResult:
                                 result.line_items.append({"sku": m.sku, "qty": m.qty})
                             break
 
-    result.pending_mentions = pending
     return result
 
 
 @dataclass
 class MessageExtraction:
     """What one arriving message says it wants — the routing decision's input."""
-    intent: str                      # revise | create | question | cancel | none
+    intent: Literal["revise", "create", "question", "cancel", "none"]
     families: list[str]              # product families referenced in the text
     line_items: list[dict]           # fully-specified (sku, qty) requests
     new_qty: int | None = None       # qty for a revise intent
@@ -195,16 +207,12 @@ def extract_message(text: str) -> MessageExtraction:
     as create. A bare 'tambien' inside a revision sentence must not fork a
     new quote — revision outranks it.
     """
-    norm = _normalize(text)
-    norm = _NO_CORRECTION.sub("", norm)  # "15, no 20" -> keeps 15
+    norm = _clean(text)
 
     families = [fam for fam, pat in _FAMILIES.items() if pat.search(norm)]
     items = extract_conversation([{"direction": "inbound", "text": text}]).line_items
 
-    new_qty = None
-    qm = re.search(r"\b(?:que\s+sean|sean)\s+(\d+)\b", norm)
-    if qm:
-        new_qty = int(qm.group(1))
+    new_qty = _extract_revision_qty(norm)
 
     if _CANCEL.search(norm):
         intent = "cancel"

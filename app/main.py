@@ -81,26 +81,14 @@ def create_app() -> FastAPI:
             ).fetchall()
             return {
                 "pending": [
-                    {
-                        "id": r["id"],
-                        "message_id": r["message_id"],
-                        "conversation_id": r["conversation_id"],
-                        "text": r["text"],
-                        "candidate_quote_ids": json.loads(r["candidate_quote_ids"]),
-                        "reason": r["reason"],
-                    }
+                    {**_review_base(r), "conversation_id": r["conversation_id"],
+                     "reason": r["reason"]}
                     for r in rows
                 ],
                 "resolved": [
-                    {
-                        "id": r["id"],
-                        "message_id": r["message_id"],
-                        "text": r["text"],
-                        "candidate_quote_ids": json.loads(r["candidate_quote_ids"]),
-                        "resolution": r["resolution"],
-                        "resolved_by": r["resolved_by"],
-                        "resolved_quote_id": r["resolved_quote_id"],
-                    }
+                    {**_review_base(r), "resolution": r["resolution"],
+                     "resolved_by": r["resolved_by"],
+                     "resolved_quote_id": r["resolved_quote_id"]}
                     for r in done
                 ],
             }
@@ -181,6 +169,16 @@ def create_app() -> FastAPI:
             return process_message(conn, payload)
 
     return app
+
+
+def _review_base(r) -> dict:
+    """Fields shared by the pending and resolved views of a review item."""
+    return {
+        "id": r["id"],
+        "message_id": r["message_id"],
+        "text": r["text"],
+        "candidate_quote_ids": json.loads(r["candidate_quote_ids"]),
+    }
 
 
 def _conversations(conn, quote_id: str) -> list[str]:

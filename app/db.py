@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS pending_assignments (
     reason              TEXT NOT NULL,
     status              TEXT NOT NULL DEFAULT 'pending',  -- pending | resolved
     resolution          TEXT,           -- applied | discarded
+    resolved_by         TEXT,           -- who/what decided (required at API)
     resolved_quote_id   TEXT
 );
 """

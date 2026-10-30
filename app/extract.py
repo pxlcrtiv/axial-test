@@ -53,6 +53,9 @@ _CANCEL = re.compile(r"\bcancel")
 _NEW = re.compile(r"\baparte\b|\btambien\b|\bagrega\b")
 _QUESTION = re.compile(r"\bme\s+confirmas\b|\bque\s+lleva\b|\blleva\s+la\s+cotiz|\bcuanto\s+(?:vale|cuesta)")
 _REVISE = re.compile(r"\bmejor\s+que\s+sean\b|\bmejor\s+sean\b|\bque\s+sean\b|\bcambialo\b|\ben\s+vez\s+de\b")
+# "aparte" is an explicit request for a separate document; "tambien"/"agrega"
+# are only weak connectives — they must not outrank a revision signal (ticket 10)
+_EXPLICIT_NEW = re.compile(r"\baparte\b")
 
 _WIDTH_AFTER_MENTION = re.compile(r"(\d+[.,]\d+)\s*[x×]\s*\d+")   # 3.20 x 100
 _ANY_WIDTH = re.compile(r"(\d+[.,]\d+)")
@@ -186,9 +189,11 @@ def extract_message(text: str) -> MessageExtraction:
     a hallucinated model output would be filtered to catalog entries before
     storage. Today: pure rules, zero tokens, fully reproducible output.
 
-    The order matters: 'aparte' dominates (a fresh request even when it
-    follows existing ones); 'mejor que sean N' is a revise; a question word
-    makes it a question; 'cancel' cancels.
+    The precedence (fixed after review finding c1): 'cancel' first; then the
+    explicit 'aparte' (a separate document, even mid-thread); then a question;
+    then a revision signal; only then the weak connectives 'tambien'/'agrega'
+    as create. A bare 'tambien' inside a revision sentence must not fork a
+    new quote — revision outranks it.
     """
     norm = _normalize(text)
     norm = _NO_CORRECTION.sub("", norm)  # "15, no 20" -> keeps 15
@@ -197,19 +202,20 @@ def extract_message(text: str) -> MessageExtraction:
     items = extract_conversation([{"direction": "inbound", "text": text}]).line_items
 
     new_qty = None
-    m = _REVISE.search(norm) or _NEW.search(norm)
     qm = re.search(r"\b(?:que\s+sean|sean)\s+(\d+)\b", norm)
     if qm:
         new_qty = int(qm.group(1))
 
     if _CANCEL.search(norm):
         intent = "cancel"
-    elif _NEW.search(norm):
-        intent = "create"
+    elif _EXPLICIT_NEW.search(norm):
+        intent = "create"           # 'aparte' always means a separate quote
     elif _QUESTION.search(norm):
         intent = "question"
     elif _REVISE.search(norm) or (families and new_qty is not None):
         intent = "revise"
+    elif _NEW.search(norm):
+        intent = "create"           # weak connective, no revision/question
     else:
         intent = "none"
 

@@ -59,3 +59,6 @@ class MessageIn(BaseModel):
 class ReviewResolveIn(BaseModel):
     decision: Literal["apply", "discard"]
     quote_id: str | None = None
+    # required, not defaulted: the audit must always be able to answer
+    # "who/what decided" (ticket 11)
+    resolved_by: str = Field(min_length=1)

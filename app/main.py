@@ -75,6 +75,10 @@ def create_app() -> FastAPI:
             rows = conn.execute(
                 "SELECT * FROM pending_assignments WHERE status = 'pending' ORDER BY id"
             ).fetchall()
+            done = conn.execute(
+                "SELECT * FROM pending_assignments WHERE status = 'resolved' "
+                "ORDER BY id DESC"
+            ).fetchall()
             return {
                 "pending": [
                     {
@@ -86,7 +90,19 @@ def create_app() -> FastAPI:
                         "reason": r["reason"],
                     }
                     for r in rows
-                ]
+                ],
+                "resolved": [
+                    {
+                        "id": r["id"],
+                        "message_id": r["message_id"],
+                        "text": r["text"],
+                        "candidate_quote_ids": json.loads(r["candidate_quote_ids"]),
+                        "resolution": r["resolution"],
+                        "resolved_by": r["resolved_by"],
+                        "resolved_quote_id": r["resolved_quote_id"],
+                    }
+                    for r in done
+                ],
             }
 
     @app.post("/review/{item_id}/resolve")
@@ -130,11 +146,12 @@ def create_app() -> FastAPI:
                 )
             conn.execute(
                 "UPDATE pending_assignments SET status = 'resolved', resolution = ?, "
-                "resolved_quote_id = ? WHERE id = ?",
-                (decision.decision, decision.quote_id, item_id),
+                "resolved_by = ?, resolved_quote_id = ? WHERE id = ?",
+                (decision.decision, decision.resolved_by, decision.quote_id, item_id),
             )
             return {"id": item_id, "status": "resolved",
-                    "resolution": decision.decision}
+                    "resolution": decision.decision,
+                    "resolved_by": decision.resolved_by}
 
     @app.post("/ingest/conversation")
     def ingest_conversation(payload: ConversationIn):

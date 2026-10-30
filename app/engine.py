@@ -197,9 +197,12 @@ def process_message(conn, payload) -> dict:
     # BEFORE any state changes. Dedupe is by id, never by text — two distinct
     # messages with identical wording are two real requests.
     if is_duplicate(conn, payload.message_id):
-        record_message(conn, payload.message_id, payload.conversation_id,
-                       payload.customer_id, payload.direction, payload.timestamp,
-                       payload.text, disposition="ignored-duplicate")
+        # the row exists (INSERT OR IGNORE would be a no-op): update it so the
+        # history shows the retry was seen and skipped, not the original story
+        conn.execute(
+            "UPDATE messages SET disposition = 'ignored-duplicate' WHERE message_id = ?",
+            (payload.message_id,),
+        )
         return {"message_id": payload.message_id, "disposition": "ignored-duplicate",
                 "quote_id": None}
 

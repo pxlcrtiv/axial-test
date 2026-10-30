@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS pending_assignments (
     reason              TEXT NOT NULL,
     status              TEXT NOT NULL DEFAULT 'pending',  -- pending | resolved
     resolution          TEXT,           -- applied | discarded
+    resolved_by         TEXT,           -- who/what decided (required at API)
     resolved_quote_id   TEXT
 );
 """
@@ -94,6 +95,24 @@ def connect() -> sqlite3.Connection:
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Upgrade tables created by an older build of this app.
+
+    CREATE TABLE IF NOT EXISTS never adds a column to a table that already
+    exists, so any quotes.db written before a schema addition would break the
+    routes that read the new column ('no such column'). Each entry below is a
+    column added after the table's first shipping version; PRAGMA-checked so
+    running this on a current DB is a no-op (ticket 11's resolved_by).
+    """
+    existing = {
+        r[1] for r in conn.execute("PRAGMA table_info(pending_assignments)")
+    }
+    if "resolved_by" not in existing:
+        # resolved_by = who/what decided (ticket 11)
+        conn.execute("ALTER TABLE pending_assignments ADD COLUMN resolved_by TEXT")
 
 
 @contextmanager

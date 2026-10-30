@@ -5,8 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 
 from .db import get_db, init_db
-from .engine import (_now, create_quote, ensure_conversation, process_message,
-                     record_message)
+from .engine import (apply_cancel, create_quote, ensure_conversation,
+                     process_message)
 from .extract import extract_conversation
 from .models import ConversationIn, MessageIn, QuotesOut, ReviewResolveIn
 
@@ -48,8 +48,13 @@ def create_app() -> FastAPI:
             if row is None:
                 raise HTTPException(404, "No such quote")
             history = conn.execute(
-                "SELECT sku, old_qty, new_qty, cause, message_id FROM line_events "
-                "WHERE quote_id = ? ORDER BY id",
+                "SELECT e.sku, e.old_qty, e.new_qty, e.cause, e.message_id, "
+                # the deciding actor rides along on the event it caused, so
+                # quote history answers "who/what decided" too (ticket 11 AC)
+                "p.resolved_by "
+                "FROM line_events e "
+                "LEFT JOIN pending_assignments p ON p.message_id = e.message_id "
+                "WHERE e.quote_id = ? ORDER BY e.id",
                 (quote_id,),
             ).fetchall()
             messages = conn.execute(
@@ -64,7 +69,13 @@ def create_app() -> FastAPI:
                 "status": row["status"],
                 "conversations": _conversations(conn, quote_id),
                 "line_items": _lines(conn, quote_id),
-                "history": [dict(h) for h in history],
+                "history": [
+                    # resolved_by appears only on events a human resolved;
+                    # machine transitions simply don't carry the key
+                    {k: v for k, v in dict(h).items()
+                     if not (k == "resolved_by" and v is None)}
+                    for h in history
+                ],
                 "messages": [dict(m) for m in messages],
             }
 
@@ -75,18 +86,22 @@ def create_app() -> FastAPI:
             rows = conn.execute(
                 "SELECT * FROM pending_assignments WHERE status = 'pending' ORDER BY id"
             ).fetchall()
+            done = conn.execute(
+                "SELECT * FROM pending_assignments WHERE status = 'resolved' "
+                "ORDER BY id DESC"
+            ).fetchall()
             return {
                 "pending": [
-                    {
-                        "id": r["id"],
-                        "message_id": r["message_id"],
-                        "conversation_id": r["conversation_id"],
-                        "text": r["text"],
-                        "candidate_quote_ids": json.loads(r["candidate_quote_ids"]),
-                        "reason": r["reason"],
-                    }
+                    {**_review_base(r), "conversation_id": r["conversation_id"],
+                     "reason": r["reason"]}
                     for r in rows
-                ]
+                ],
+                "resolved": [
+                    {**_review_base(r), "resolution": r["resolution"],
+                     "resolved_by": r["resolved_by"],
+                     "resolved_quote_id": r["resolved_quote_id"]}
+                    for r in done
+                ],
             }
 
     @app.post("/review/{item_id}/resolve")
@@ -114,27 +129,16 @@ def create_app() -> FastAPI:
                 if decision.quote_id not in candidates:
                     raise HTTPException(
                         422, f"quote_id must be one of {candidates}")
-                conn.execute(
-                    "UPDATE quotes SET status = 'cancelled' WHERE id = ?",
-                    (decision.quote_id,),
-                )
-                conn.execute(
-                    "INSERT INTO line_events (quote_id, sku, old_qty, new_qty, cause, message_id, timestamp) "
-                    "VALUES (?, NULL, NULL, NULL, 'cancelled', ?, ?)",
-                    (decision.quote_id, row["message_id"], _now()),
-                )
-                conn.execute(
-                    "UPDATE messages SET disposition = 'cancelled', quote_id = ? "
-                    "WHERE message_id = ?",
-                    (decision.quote_id, row["message_id"]),
-                )
+                # the transition itself lives in the engine (single owner)
+                apply_cancel(conn, decision.quote_id, row["message_id"])
             conn.execute(
                 "UPDATE pending_assignments SET status = 'resolved', resolution = ?, "
-                "resolved_quote_id = ? WHERE id = ?",
-                (decision.decision, decision.quote_id, item_id),
+                "resolved_by = ?, resolved_quote_id = ? WHERE id = ?",
+                (decision.decision, decision.resolved_by, decision.quote_id, item_id),
             )
             return {"id": item_id, "status": "resolved",
-                    "resolution": decision.decision}
+                    "resolution": decision.decision,
+                    "resolved_by": decision.resolved_by}
 
     @app.post("/ingest/conversation")
     def ingest_conversation(payload: ConversationIn):
@@ -176,6 +180,16 @@ def create_app() -> FastAPI:
             return process_message(conn, payload)
 
     return app
+
+
+def _review_base(r) -> dict:
+    """Fields shared by the pending and resolved views of a review item."""
+    return {
+        "id": r["id"],
+        "message_id": r["message_id"],
+        "text": r["text"],
+        "candidate_quote_ids": json.loads(r["candidate_quote_ids"]),
+    }
 
 
 def _conversations(conn, quote_id: str) -> list[str]:

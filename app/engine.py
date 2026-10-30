@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from .catalog import CATALOG
 from .db import get_db
 from .extract import extract_message
+from .models import MessageIn
 
 
 def _now() -> str:
@@ -39,6 +40,22 @@ def ensure_conversation(conn, conversation_id: str, customer_id: str):
     )
 
 
+def _audit(conn, quote_id: str, cause: str, message_id: str,
+           sku: str | None = None, old_qty: int | None = None,
+           new_qty: int | None = None):
+    """THE single audit writer: one row in line_events per state change.
+
+    Every transition (created/updated/linked/cancelled) records what changed
+    and which message caused it through this helper — nothing else may
+    INSERT into line_events (enforced by tests/test_structure.py).
+    """
+    conn.execute(
+        "INSERT INTO line_events (quote_id, sku, old_qty, new_qty, cause, "
+        "message_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (quote_id, sku, old_qty, new_qty, cause, message_id, _now()),
+    )
+
+
 def link_conversation(conn, quote_id: str, conversation_id: str, message_id: str):
     """Add a (quote, conversation) pair to the many-to-many junction.
 
@@ -53,11 +70,7 @@ def link_conversation(conn, quote_id: str, conversation_id: str, message_id: str
         (quote_id, conversation_id, _now()),
     )
     if cur.rowcount:  # genuinely new link -> audit it
-        conn.execute(
-            "INSERT INTO line_events (quote_id, sku, old_qty, new_qty, cause, message_id, timestamp) "
-            "VALUES (?, NULL, NULL, NULL, 'linked', ?, ?)",
-            (quote_id, message_id, _now()),
-        )
+        _audit(conn, quote_id, "linked", message_id)
 
 
 def create_quote(conn, customer_id: str, conversation_id: str,
@@ -73,22 +86,33 @@ def create_quote(conn, customer_id: str, conversation_id: str,
             "INSERT INTO quote_lines (quote_id, sku, qty) VALUES (?, ?, ?)",
             (quote_id, li["sku"], li["qty"]),
         )
-        conn.execute(
-            "INSERT INTO line_events (quote_id, sku, old_qty, new_qty, cause, message_id, timestamp) "
-            "VALUES (?, ?, NULL, ?, 'created', ?, ?)",
-            (quote_id, li["sku"], li["qty"], message_id, _now()),
-        )
+        _audit(conn, quote_id, "created", message_id,
+               sku=li["sku"], new_qty=li["qty"])
     return quote_id
 
 
-def record_message(conn, message_id: str, conversation_id: str, customer_id: str,
-                   direction: str, timestamp: str, text: str,
-                   disposition: str, quote_id: str | None = None):
+def record_message(conn, payload: MessageIn, disposition: str,
+                   quote_id: str | None = None):
+    """Persist one message's story. Takes the MessageIn whole — the six
+    fields always travel together (data-clump fix, ticket 12)."""
     conn.execute(
         "INSERT OR IGNORE INTO messages (message_id, conversation_id, customer_id, "
         "direction, timestamp, text, disposition, quote_id) VALUES (?,?,?,?,?,?,?,?)",
-        (message_id, conversation_id, customer_id, direction, timestamp, text,
-         disposition, quote_id),
+        (payload.message_id, payload.conversation_id, payload.customer_id,
+         payload.direction, payload.timestamp, payload.text, disposition, quote_id),
+    )
+
+
+def apply_cancel(conn, quote_id: str, message_id: str):
+    """The 'cancelled' transition — lives here (the engine docstring promises
+    all transitions do), not in the route."""
+    conn.execute(
+        "UPDATE quotes SET status = 'cancelled' WHERE id = ?", (quote_id,))
+    _audit(conn, quote_id, "cancelled", message_id)
+    conn.execute(
+        "UPDATE messages SET disposition = 'cancelled', quote_id = ? "
+        "WHERE message_id = ?",
+        (quote_id, message_id),
     )
 
 
@@ -154,11 +178,8 @@ def _update_line(conn, quote_id: str, sku: str, new_qty: int, message_id: str) -
         "UPDATE quote_lines SET qty = ? WHERE quote_id = ? AND sku = ?",
         (new_qty, quote_id, sku),
     )
-    conn.execute(
-        "INSERT INTO line_events (quote_id, sku, old_qty, new_qty, cause, message_id, timestamp) "
-        "VALUES (?, ?, ?, ?, 'updated', ?, ?)",
-        (quote_id, sku, row["qty"], new_qty, message_id, _now()),
-    )
+    _audit(conn, quote_id, "updated", message_id,
+           sku=sku, old_qty=row["qty"], new_qty=new_qty)
     return True
 
 
@@ -171,7 +192,7 @@ def _park_review(conn, payload, families: list[str], candidates: list[str], reas
     )
 
 
-def process_message(conn, payload) -> dict:
+def process_message(conn, payload: MessageIn) -> dict:
     """Single ingest path for one WhatsApp event. Returns a disposition report.
 
     Order: dedupe -> extract intent -> route by reference -> apply or park.
@@ -197,9 +218,12 @@ def process_message(conn, payload) -> dict:
     # BEFORE any state changes. Dedupe is by id, never by text — two distinct
     # messages with identical wording are two real requests.
     if is_duplicate(conn, payload.message_id):
-        record_message(conn, payload.message_id, payload.conversation_id,
-                       payload.customer_id, payload.direction, payload.timestamp,
-                       payload.text, disposition="ignored-duplicate")
+        # the row exists (INSERT OR IGNORE would be a no-op): update it so the
+        # history shows the retry was seen and skipped, not the original story
+        conn.execute(
+            "UPDATE messages SET disposition = 'ignored-duplicate' WHERE message_id = ?",
+            (payload.message_id,),
+        )
         return {"message_id": payload.message_id, "disposition": "ignored-duplicate",
                 "quote_id": None}
 
@@ -214,9 +238,7 @@ def process_message(conn, payload) -> dict:
 
     def _done(disposition: str, quote_id: str | None):
         """Persist the message's story (disposition + acting quote) and reply."""
-        record_message(conn, payload.message_id, payload.conversation_id,
-                       payload.customer_id, payload.direction, payload.timestamp,
-                       payload.text, disposition, quote_id)
+        record_message(conn, payload, disposition, quote_id)
         return {"message_id": payload.message_id, "disposition": disposition,
                 "quote_id": quote_id}
 

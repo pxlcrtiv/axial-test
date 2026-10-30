@@ -30,5 +30,5 @@ CATALOG: dict[str, Sku] = {
 }
 
 
-def SKUS() -> frozenset[str]:
+def valid_skus() -> frozenset[str]:
     return frozenset(CATALOG)

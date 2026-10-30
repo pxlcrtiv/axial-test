@@ -201,6 +201,36 @@ def test_duplicate_delivery_is_idempotent(client):
     after = client.get("/quotes", params={"customer": "C-10029"}).json()
     assert after == before
 
+    # ...and a human can SEE the redelivery was skipped: the message row
+    # reports ignored-duplicate, not the original ingestion's disposition
+    detail = client.get("/quotes/Q-002").json()
+    dispositions = {m["message_id"]: m["disposition"] for m in detail["messages"]}
+    assert dispositions["wamid.662.0002"] == "ignored-duplicate"
+
+
+def test_tambien_in_revision_does_not_fork_a_new_quote(client):
+    """Intent precedence: a revision signal beats a bare 'tambien' connective.
+
+    '...mejor que sean 15, y tambien manten el mesh' must revise Q-001's
+    lona line, NOT create a new quote just because 'tambien' matched the
+    create-keyword first.
+    """
+    _seed_phase1(client)
+    r = client.post("/ingest/message", json={
+        "message_id": "wamid.411.0400", "conversation_id": "wa-thread-411",
+        "customer_id": "C-10029", "direction": "inbound",
+        "timestamp": "2026-02-11T12:00:00Z",
+        "text": "y de las lonas tambien mejor que sean 15"})
+    assert r.status_code == 200
+    assert r.json()["disposition"] in ("updated", "linked")
+    assert r.json()["quote_id"] == "Q-001"
+
+    quotes = client.get("/quotes", params={"customer": "C-10029"}).json()["quotes"]
+    assert len(quotes) == 1, "revision with 'tambien' must not fork a new quote"
+    lona = next(li for li in quotes[0]["line_items"]
+                if li["sku"] == "ALFBTC-013-320100")
+    assert lona["qty"] == 15
+
 
 def test_same_text_different_message_id_is_a_real_repeat(client):
     """Dedupe is by message_id, not text: identical wording twice still applies."""
@@ -241,7 +271,8 @@ def test_cancelalo_parks_in_review_queue_and_changes_nothing(client):
 
     # resolving: discard -> quote untouched, item leaves the queue
     res = client.post(f"/review/{item['id']}/resolve",
-                      json={"decision": "discard", "quote_id": None})
+                      json={"decision": "discard", "quote_id": None,
+                            "resolved_by": "ops@acme"})
     assert res.status_code == 200
     after = client.get("/quotes", params={"customer": "C-10029"}).json()
     assert after == before
@@ -261,11 +292,13 @@ def test_review_resolve_apply_cancels_only_the_chosen_quote(client):
     item = client.get("/review").json()["pending"][0]
     # applying to a quote outside the candidate list is refused
     bad = client.post(f"/review/{item['id']}/resolve",
-                      json={"decision": "apply", "quote_id": "Q-999"})
+                      json={"decision": "apply", "quote_id": "Q-999",
+                            "resolved_by": "ops@acme"})
     assert bad.status_code == 422
 
     res = client.post(f"/review/{item['id']}/resolve",
-                      json={"decision": "apply", "quote_id": "Q-002"})
+                      json={"decision": "apply", "quote_id": "Q-002",
+                            "resolved_by": "ops@acme"})
     assert res.status_code == 200
     quotes = {q["quote_id"]: q for q in
               client.get("/quotes", params={"customer": "C-10029"}).json()["quotes"]}
@@ -277,5 +310,93 @@ def test_review_resolve_apply_cancels_only_the_chosen_quote(client):
                for e in h)
     # double-resolve is refused
     again = client.post(f"/review/{item['id']}/resolve",
-                        json={"decision": "apply", "quote_id": "Q-002"})
+                        json={"decision": "apply", "quote_id": "Q-002",
+                              "resolved_by": "ops@acme"})
     assert again.status_code == 409
+
+
+def test_review_resolution_records_the_deciding_actor(client):
+    """Issue 6: 'records who/what decided' — identity stored with the outcome."""
+    _seed_phase1(client)
+    for ev in EVENTS[:3]:
+        client.post("/ingest/message", json=ev)
+    client.post("/ingest/message", json={
+        "message_id": "wamid.411.0302", "conversation_id": "wa-thread-411",
+        "customer_id": "C-10029", "direction": "inbound",
+        "timestamp": "2026-02-12T10:10:00Z", "text": "mejor cancelalo"})
+
+    item = client.get("/review").json()["pending"][0]
+    # missing actor is rejected, not silently defaulted
+    no_actor = client.post(f"/review/{item['id']}/resolve",
+                           json={"decision": "discard", "quote_id": None})
+    assert no_actor.status_code == 422
+
+    res = client.post(f"/review/{item['id']}/resolve",
+                      json={"decision": "discard", "quote_id": None,
+                            "resolved_by": "izzy@acme"})
+    assert res.status_code == 200
+    assert res.json()["resolved_by"] == "izzy@acme"
+    # and it persists: resolving again is 409, and the record shows the actor
+    assert client.get("/review").json()["pending"] == []
+    resolved = client.get("/review").json()["resolved"]
+    assert resolved[0]["resolution"] == "discard"
+    assert resolved[0]["resolved_by"] == "izzy@acme"
+
+
+def test_quote_history_exposes_the_resolving_actor(client):
+    """T11 AC1: the stored resolution shows in *quote* history, not just /review."""
+    _seed_phase1(client)
+    for ev in EVENTS[:3]:
+        client.post("/ingest/message", json=ev)
+    client.post("/ingest/message", json={
+        "message_id": "wamid.411.0302", "conversation_id": "wa-thread-411",
+        "customer_id": "C-10029", "direction": "inbound",
+        "timestamp": "2026-02-12T10:10:00Z", "text": "mejor cancelalo"})
+
+    item = client.get("/review").json()["pending"][0]
+    client.post(f"/review/{item['id']}/resolve",
+                json={"decision": "apply", "quote_id": "Q-002",
+                      "resolved_by": "izzy@acme"})
+
+    history = client.get("/quotes/Q-002").json()["history"]
+    cancelled = [h for h in history if h["cause"] == "cancelled"]
+    assert cancelled, "cancelled event must appear in quote history"
+    assert cancelled[0]["resolved_by"] == "izzy@acme"
+
+
+def test_pre_existing_db_without_resolved_by_is_migrated(tmp_path, monkeypatch):
+    """A quotes.db created before ticket 11 must still accept resolutions.
+
+    `CREATE TABLE IF NOT EXISTS` never adds columns to an existing table, so
+    init_db must ALTER a legacy pending_assignments in place — otherwise
+    /review/{id}/resolve dies with 'no such column: resolved_by'.
+    """
+    import sqlite3
+    from app import db as dbmod
+
+    db_file = tmp_path / "legacy.db"
+    monkeypatch.setenv("QUOTES_DB_PATH", str(db_file))
+    # the pre-ticket-11 table: no resolved_by column
+    conn = sqlite3.connect(db_file)
+    conn.executescript(
+        "CREATE TABLE pending_assignments ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL,"
+        " conversation_id TEXT NOT NULL, customer_id TEXT NOT NULL,"
+        " text TEXT NOT NULL, candidate_quote_ids TEXT NOT NULL,"
+        " reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',"
+        " resolution TEXT, resolved_quote_id TEXT);"
+    )
+    conn.execute(
+        "INSERT INTO pending_assignments (message_id, conversation_id,"
+        " customer_id, text, candidate_quote_ids, reason)"
+        " VALUES ('m1','t1','C-1','mejor cancelalo','[\"Q-001\"]','ambiguous-cancel')"
+    )
+    conn.commit()
+    conn.close()
+
+    dbmod.init_db()  # upgrade path runs here
+
+    conn = sqlite3.connect(db_file)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pending_assignments)")}
+    conn.close()
+    assert "resolved_by" in cols, "legacy table must gain the column"

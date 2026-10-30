@@ -11,7 +11,7 @@ and quantities; the ERP prices them later.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn app.main:app --port 8000      # API
-.venv/bin/pytest                                 # full E2E suite (11 tests)
+.venv/bin/pytest                                 # 19 tests: 13 E2E + 6 structure checks
 ```
 
 State lives in `quotes.db` (SQLite file, set `QUOTES_DB_PATH` to move it) — it
@@ -140,7 +140,11 @@ handoff points.
 | Webhook re-delivery of event 4 (same `message_id`, byte-identical) | `ignored-duplicate`, zero state change | `messages.message_id` is the PK; dedupe before routing |
 | Two *different* messages, identical text | Both apply (second is a real repeat request) | Dedupe is by id, never by text — text-equality would swallow genuine repeats |
 | "mejor cancelalo", 2 open quotes | Parked in review with candidates `[Q-001, Q-002]`; nothing changes | Ambiguity is a human decision (§2) |
+| Resolve stores who decided | `resolved_by` is **required** on `/review/{id}/resolve` (422 if missing), persisted with the outcome, exposed in `GET /review`'s `resolved` list **and** joined onto `GET /quotes/{id}`'s `history` (the `cancelled` event carries it; machine transitions omit the key) | The audit must always answer "who/what decided" — a defaulted identity would make the answer a lie |
+| Webhook redelivery after first ingestion | The message row's disposition flips to `ignored-duplicate`, quotes untouched | Retrying is *visible* — a human reading the history sees the skip, not a stale original story |
+| "…mejor que sean 15, y también…" (revision + connective) | Routes as a revision; does not fork a new quote | Intent precedence: cancel > explicit "aparte" > question > revision > weak connectives (`tambien`/`agrega`) |
 | Customer asks about 1.50 m width (not in catalog) | Mention yields no SKU → no line, no error | `_match_sku` returns `None` for widths the catalog doesn't carry |
+| "lonas 15" — quantity *after* the family, no width | No line: `_QTY_PATTERNS` reads number-before-unit ("15 lonas"), so no qty pairs with the mention; nothing is created, and a later "mejor que sean 10" parks as `revision-no-target` (verified: two messages, zero quotes) | Word-order sensitivity is the deterministic trade-off — guessing a qty (or a SKU) from an ambiguous phrase is exactly what the catalog forbids. Note the SKU *would* resolve (each family has one SKU today); the qty is what's missing |
 | Second chat asks "qué lleva la cotización" (event 2) | Link `wa-thread-662` → Q-001, quantities untouched | Questions reference, never mutate; junction records the observed link |
 | "aparte" in a chat that already has a quote (event 3) | New quote Q-002, same chat linked to both | No conversation→quote FK exists to break |
 | Revision targets a family no open quote carries | Parked (`revision-no-target`), nothing changes | Nothing to revise ≠ create-new; guessing would fork the quote tree |
@@ -148,6 +152,14 @@ handoff points.
 | **Deliberately not handled: multi-item revisions in one message** ("lonas 15 y mesh 8") | Only the first matched family routes the message | The brief's messages revise one thing at a time; multi-target revision needs a per-family candidate split — an honest gap, not a silent one: today's behavior would park it as ambiguous |
 
 ## 5. Architectural trade-offs & scaling to 1,000 conversations/day
+
+**Kept by design** (reviewed, deliberate API choices — not silent gaps):
+`POST /ingest/conversation` returns **422** when *no* catalog line item can be
+extracted — a quote document with nothing in it is not a useful resource, and
+silently creating an empty draft would pollute the ERP hand-off; the
+`customers` table + optional `customer_name` on the Phase-1 payload exist so
+quotes are attributable to a real contact — both go slightly beyond the brief
+on purpose.
 
 **Chosen:** deterministic extraction + SQL routing + SQLite file. Rejected
 alternatives: an LLM in the hot path (cost, non-determinism, and it still
@@ -192,6 +204,19 @@ draft and an over-narrow audit assertion were both caught by reading the
 diff, not by green tests alone. The README's claims are grounded in the code
 they describe; everything in this file is verifiable with `.venv/bin/pytest`.
 
+Two honesty notes about this repo's own history:
+
+1. **A debug log was committed early and stays in old commits.** A
+   `firebase-debug.log` (containing a personal email address) landed in the
+   first commits and was untracked in PR #5 — but it is *still reachable in
+   git history*, which was deliberately left untouched rather than
+   force-pushed (rewriting pushed history is a destructive operation).
+   Fresh checkouts don't contain the file (`*.log` is gitignored and the
+   tree is clean); only old commits carry it.
+2. **Clean-checkout claim, re-verified.** From a true `git clone` of this
+   repo into an empty directory: no `*.log` files present,
+   `pip install -r requirements.txt && pytest` → **19 passed**.
+
 ---
 
 ## API examples
@@ -213,5 +238,5 @@ curl -s 'localhost:8000/quotes?customer=C-10029'
 # Ambiguity queue (e.g. "mejor cancelalo")
 curl -s localhost:8000/review
 curl -s localhost:8000/review/1/resolve -H 'content-type: application/json' \
-  -d '{"decision":"apply","quote_id":"Q-002"}'
+  -d '{"decision":"apply","quote_id":"Q-002","resolved_by":"izzy@acme"}'
 ```

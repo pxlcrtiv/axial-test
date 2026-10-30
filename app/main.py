@@ -48,8 +48,13 @@ def create_app() -> FastAPI:
             if row is None:
                 raise HTTPException(404, "No such quote")
             history = conn.execute(
-                "SELECT sku, old_qty, new_qty, cause, message_id FROM line_events "
-                "WHERE quote_id = ? ORDER BY id",
+                "SELECT e.sku, e.old_qty, e.new_qty, e.cause, e.message_id, "
+                # the deciding actor rides along on the event it caused, so
+                # quote history answers "who/what decided" too (ticket 11 AC)
+                "p.resolved_by "
+                "FROM line_events e "
+                "LEFT JOIN pending_assignments p ON p.message_id = e.message_id "
+                "WHERE e.quote_id = ? ORDER BY e.id",
                 (quote_id,),
             ).fetchall()
             messages = conn.execute(
@@ -64,7 +69,13 @@ def create_app() -> FastAPI:
                 "status": row["status"],
                 "conversations": _conversations(conn, quote_id),
                 "line_items": _lines(conn, quote_id),
-                "history": [dict(h) for h in history],
+                "history": [
+                    # resolved_by appears only on events a human resolved;
+                    # machine transitions simply don't carry the key
+                    {k: v for k, v in dict(h).items()
+                     if not (k == "resolved_by" and v is None)}
+                    for h in history
+                ],
                 "messages": [dict(m) for m in messages],
             }
 

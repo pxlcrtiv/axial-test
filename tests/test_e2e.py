@@ -343,6 +343,27 @@ def test_review_resolution_records_the_deciding_actor(client):
     assert resolved[0]["resolved_by"] == "izzy@acme"
 
 
+def test_quote_history_exposes_the_resolving_actor(client):
+    """T11 AC1: the stored resolution shows in *quote* history, not just /review."""
+    _seed_phase1(client)
+    for ev in EVENTS[:3]:
+        client.post("/ingest/message", json=ev)
+    client.post("/ingest/message", json={
+        "message_id": "wamid.411.0302", "conversation_id": "wa-thread-411",
+        "customer_id": "C-10029", "direction": "inbound",
+        "timestamp": "2026-02-12T10:10:00Z", "text": "mejor cancelalo"})
+
+    item = client.get("/review").json()["pending"][0]
+    client.post(f"/review/{item['id']}/resolve",
+                json={"decision": "apply", "quote_id": "Q-002",
+                      "resolved_by": "izzy@acme"})
+
+    history = client.get("/quotes/Q-002").json()["history"]
+    cancelled = [h for h in history if h["cause"] == "cancelled"]
+    assert cancelled, "cancelled event must appear in quote history"
+    assert cancelled[0]["resolved_by"] == "izzy@acme"
+
+
 def test_pre_existing_db_without_resolved_by_is_migrated(tmp_path, monkeypatch):
     """A quotes.db created before ticket 11 must still accept resolutions.
 

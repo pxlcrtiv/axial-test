@@ -91,7 +91,7 @@ def create_quote(conn, customer_id: str, conversation_id: str,
     return quote_id
 
 
-def record_message(conn, payload: "MessageIn", disposition: str,
+def record_message(conn, payload: MessageIn, disposition: str,
                    quote_id: str | None = None):
     """Persist one message's story. Takes the MessageIn whole — the six
     fields always travel together (data-clump fix, ticket 12)."""
@@ -192,7 +192,7 @@ def _park_review(conn, payload, families: list[str], candidates: list[str], reas
     )
 
 
-def process_message(conn, payload) -> dict:
+def process_message(conn, payload: MessageIn) -> dict:
     """Single ingest path for one WhatsApp event. Returns a disposition report.
 
     Order: dedupe -> extract intent -> route by reference -> apply or park.

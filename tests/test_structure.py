@@ -43,8 +43,7 @@ def test_intent_is_a_literal():
 
 
 def test_dead_field_removed_and_skus_renamed():
-    assert not hasattr(extract.ExtractionResult, "__annotations__") or \
-        "pending_mentions" not in extract.ExtractionResult.__annotations__
+    assert "pending_mentions" not in extract.ExtractionResult.__annotations__
     import app.catalog as catalog
     assert not hasattr(catalog, "SKUS")
     assert hasattr(catalog, "valid_skus")

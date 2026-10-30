@@ -4,8 +4,8 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Red test: a revision phrasing containing "también" updates an existing line and does NOT fork a new quote
-- [ ] Event 3's "aparte" still creates Q-002 (existing test stays green)
-- [ ] Full suite green
+- [x] Red test: a revision phrasing containing "también" updates an existing line and does NOT fork a new quote
+- [x] Event 3's "aparte" still creates Q-002 (existing test stays green)
+- [x] Full suite green

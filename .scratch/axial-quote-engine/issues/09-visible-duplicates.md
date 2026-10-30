@@ -4,8 +4,8 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Red test: re-send an already-ingested event, then its message row reports `ignored-duplicate` while quotes are byte-identical
-- [ ] First ingestion still reports its real disposition (`updated`, `created`, …)
-- [ ] Full suite green
+- [x] Red test: re-send an already-ingested event, then its message row reports `ignored-duplicate` while quotes are byte-identical
+- [x] First ingestion still reports its real disposition (`updated`, `created`, …)
+- [x] Full suite green

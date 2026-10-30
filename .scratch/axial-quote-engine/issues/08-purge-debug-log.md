@@ -4,8 +4,8 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `git rm --cached firebase-debug.log` + `.gitignore` covers `*.log`
-- [ ] `git ls-files | grep -i log` returns nothing on the branch
-- [ ] History rewrite (force-push to strip it from past commits) handled per user's explicit decision — recorded here when made; if declined, this ticket covers untrack-only and the README AI-usage paragraph notes the old commits carry it
+- [x] `git rm --cached firebase-debug.log` + `.gitignore` covers `*.log`
+- [x] `git ls-files | grep -i '\.log$'` returns nothing on the branch (wording tightened: plain `grep -i log` also matches this ticket's own filename)
+- [x] History rewrite handled per user's explicit decision — **decision recorded 2026-10-30: not force-pushed** (destructive op, no explicit confirmation given; PR #5 left history intact). Fallback applied: untrack-only, and README §6 now notes the old commits still carry the file. A later force-push remains one `git filter-repo` + `push --force` away.

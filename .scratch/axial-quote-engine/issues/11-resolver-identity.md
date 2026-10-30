@@ -4,8 +4,8 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Red test: resolve with an actor identity; the stored resolution exposes it (review/quote history)
-- [ ] Missing actor is rejected or explicitly defaulted — the choice is stated in the README
-- [ ] Full suite green
+- [x] Red test: resolve with an actor identity; the stored resolution exposes it (review/quote history)
+- [x] Missing actor is rejected or explicitly defaulted — the choice is stated in the README
+- [x] Full suite green

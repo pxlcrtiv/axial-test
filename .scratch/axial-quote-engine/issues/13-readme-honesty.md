@@ -4,9 +4,9 @@
 
 **Blocked by:** 8, 9, 10, 11 (must document the final behaviour).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Widthless-family case in the edge table with mechanism + human-visible outcome
-- [ ] Kept-by-design items explicitly marked as such
-- [ ] Clean-checkout verification re-run and true
-- [ ] CONTEXT.md glossary consistent with new terms
+- [x] Widthless-family case in the edge table with mechanism + human-visible outcome
+- [x] Kept-by-design items explicitly marked as such
+- [x] Clean-checkout verification re-run and true
+- [x] CONTEXT.md glossary consistent with new terms

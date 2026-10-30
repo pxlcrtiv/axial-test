@@ -12,7 +12,8 @@ don't drift to synonyms.
 | **Link** | An observed `(quote, conversation)` pair in the junction table. Links are recorded *after* a message acts on a quote; they are never assumed upfront for routing. |
 | **Disposition** | What happened to an ingested message: `created`, `updated`, `linked`, `noted`, `needs_review`, `ignored-duplicate`, `cancelled`. |
 | **Candidate quote** | A quote that a message *could* refer to, computed from the product families the message references (within the message's customer). Routing acts only when exactly one candidate exists. |
-| **Review queue / pending assignment** | An ambiguous message parked with its candidate quotes. State is frozen until a human resolves it (`apply` / `discard`). |
+| **Review queue / pending assignment** | An ambiguous message parked with its candidate quotes. State is frozen until a human resolves it (`apply` / `discard`); the resolution always stores `resolved_by` (the deciding identity — required, never defaulted). |
+| **Resolver / actor** | The `resolved_by` identity on a review resolution: who/what made the call. Persisted with the outcome in `pending_assignments`, surfaced in `GET /review`'s `resolved` list. |
 | **Family** | Coarse product class (`lona`, `mesh`, `microperforado`, `acrilico`) used by the extractor; maps to catalog SKUs via `app/catalog.py`. |
 | **Catalog** | The four-SKU mock DB in `app/catalog.py`. The only source of valid SKU strings; foreign SKUs are impossible by construction. |
 

@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** done
+**Status:** resolved
 
 - [x] `git rm --cached firebase-debug.log` + `.gitignore` covers `*.log`
 - [x] `git ls-files | grep -i '\.log$'` returns nothing on the branch (wording tightened: plain `grep -i log` also matches this ticket's own filename)

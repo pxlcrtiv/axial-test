@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** done
+**Status:** resolved
 
 - [x] Red test: resolve with an actor identity; the stored resolution exposes it (review/quote history)
 - [x] Missing actor is rejected or explicitly defaulted — the choice is stated in the README

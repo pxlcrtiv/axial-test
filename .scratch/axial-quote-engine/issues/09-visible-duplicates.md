@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** done
+**Status:** resolved
 
 - [x] Red test: re-send an already-ingested event, then its message row reports `ignored-duplicate` while quotes are byte-identical
 - [x] First ingestion still reports its real disposition (`updated`, `created`, …)

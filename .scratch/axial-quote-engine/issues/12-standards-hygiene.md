@@ -4,10 +4,10 @@
 
 **Blocked by:** 9, 11 (same functions — batch after those land to avoid conflicts).
 
-**Status:** done
+**Status:** resolved
 
 - [x] One `_audit(...)` helper; no duplicated `INSERT INTO line_events` shape outside it
 - [x] `cancelled` transition implemented in the engine, not the route
 - [x] `extract_message` doesn't duplicate `_QTY_PATTERNS[1]` or re-normalize before delegating
 - [x] `record_message` receives the payload object; intent is `Literal[...]`; `pending_mentions` removed; `SKUS()` renamed
-- [x] Full suite green with zero behaviour change (13 tests)
+- [x] Full suite green with zero behaviour change (suite was 13 E2E tests at ticket open; the ticket's own structure tests brought it to 19 — count corrected after review caught it stale)

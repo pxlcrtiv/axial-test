@@ -191,7 +191,7 @@ or cached projections; extraction is microseconds and never a bottleneck.
 
 ## 6. How I used AI tools
 
-Honestly and heavily — as a coding agent (OpenCode), the way the take-home
+Honestly and heavily, I used a coding agent (OpenCode), the way the take-home
 assumes. The workflow was: grill the design decisions first (stack, storage,
 dedupe/queue scope, PR slicing), write the tickets, then **test-first**: every
 slice began with a failing E2E test that replays the assignment verbatim, so
